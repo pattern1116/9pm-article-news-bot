@@ -6,7 +6,7 @@ export default function PlayerControls({ isPlaying, onPlay, onStop, disabled, pa
   const [voices, setVoices] = useState([]);
 
   useEffect(() => {
-    fetch(`${API_URL}/voices`)
+    fetch(`${API_URL}/voices`, { credentials: "include" })
       .then((r) => r.json())
       .then((data) => setVoices(data))
       .catch(() => {});

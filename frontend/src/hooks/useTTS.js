@@ -66,6 +66,7 @@ export function useTTS() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, voice }),
+      credentials: "include",
       signal,
     });
 
