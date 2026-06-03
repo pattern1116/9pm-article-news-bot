@@ -1,0 +1,15 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/*.pyc
+backend/test.wav
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Env (로컬 설정)
+frontend/.env.local
+
+# macOS
+.DS_Store
