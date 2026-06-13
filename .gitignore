@@ -13,3 +13,6 @@ frontend/.env.local
 
 # macOS
 .DS_Store
+
+# Secrets / local env (added for Turnstile)
+backend/.env

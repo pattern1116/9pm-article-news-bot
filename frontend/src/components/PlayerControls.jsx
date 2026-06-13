@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { getSession } from "../auth";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
@@ -6,7 +7,13 @@ export default function PlayerControls({ isPlaying, onPlay, onStop, disabled, pa
   const [voices, setVoices] = useState([]);
 
   useEffect(() => {
-    fetch(`${API_URL}/voices`, { credentials: "include" })
+    getSession()
+      .then((session) =>
+        fetch(`${API_URL}/voices`, {
+          credentials: "include",
+          headers: { "X-Session-Token": session },
+        })
+      )
       .then((r) => r.json())
       .then((data) => setVoices(data))
       .catch(() => {});

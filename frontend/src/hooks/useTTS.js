@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback } from "react";
+import { getSession, clearSession } from "../auth";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const SAMPLE_RATE = 24000;
@@ -62,14 +63,22 @@ export function useTTS() {
   }, []);
 
   async function streamParagraph(text, voice, signal) {
+    const session = await getSession();
     const res = await fetch(`${API_URL}/tts/stream`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Session-Token": session,
+      },
       body: JSON.stringify({ text, voice }),
       credentials: "include",
       signal,
     });
 
+    if (res.status === 401) {
+      clearSession();
+      throw new Error("HTTP 401");
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const ctx = getAudioContext();

@@ -1,8 +1,18 @@
 from contextlib import asynccontextmanager
 from io import BytesIO
+from urllib.parse import urlencode
+from urllib.request import urlopen, Request
+import hashlib
+import hmac
+import json
+import os
+import secrets
 import struct
+import time
 
-from fastapi import FastAPI, HTTPException
+from dotenv import load_dotenv
+
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -12,6 +22,42 @@ import soundfile as sf
 from kokoro import KPipeline
 
 SAMPLE_RATE = 24000
+
+# --- Turnstile / session auth ---
+# Load secrets from backend/.env (gitignored — never committed).
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+# Cloudflare Turnstile secret (server-side only, never shipped to the browser).
+TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET", "")
+if not TURNSTILE_SECRET:
+    raise RuntimeError("TURNSTILE_SECRET is not set (see backend/.env)")
+# Signs short-lived session tokens. Random per-process unless pinned via env.
+SESSION_SECRET = os.environ.get("SESSION_SECRET", secrets.token_hex(32))
+SESSION_TTL = 60 * 60  # 1 hour
+
+
+def issue_session() -> str:
+    exp = int(time.time()) + SESSION_TTL
+    sig = hmac.new(SESSION_SECRET.encode(), str(exp).encode(), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def session_valid(token: str) -> bool:
+    try:
+        exp_str, sig = token.split(".", 1)
+        expected = hmac.new(
+            SESSION_SECRET.encode(), exp_str.encode(), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return False
+        return int(exp_str) > time.time()
+    except (ValueError, AttributeError):
+        return False
+
+
+def require_session(x_session_token: str | None = Header(default=None)) -> None:
+    if not x_session_token or not session_valid(x_session_token):
+        raise HTTPException(status_code=401, detail="invalid or missing session")
 
 VOICES = [
     {"id": "af_heart",   "name": "Heart (US Female)"},
@@ -43,6 +89,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:4173",
+        "http://localhost:8787",
         "https://article-bot.matildabc.com",
     ],
     allow_credentials=True,
@@ -79,13 +126,36 @@ class TTSRequest(BaseModel):
     voice: str = "af_heart"
 
 
+class TurnstileRequest(BaseModel):
+    token: str
+
+
+@app.post("/auth/turnstile")
+def auth_turnstile(req: TurnstileRequest):
+    """Verify a Turnstile token with Cloudflare, then issue a session token."""
+    data = urlencode({"secret": TURNSTILE_SECRET, "response": req.token}).encode()
+    http_req = Request(
+        "https://challenges.cloudflare.com/turnstile/v0/siteverify", data=data
+    )
+    try:
+        with urlopen(http_req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+    except Exception:
+        raise HTTPException(status_code=502, detail="turnstile verify failed")
+
+    if not result.get("success"):
+        raise HTTPException(status_code=403, detail="turnstile rejected")
+
+    return {"session": issue_session()}
+
+
 @app.get("/voices")
-def get_voices():
+def get_voices(_: None = Depends(require_session)):
     return VOICES
 
 
 @app.post("/tts/stream")
-def tts_stream(req: TTSRequest):
+def tts_stream(req: TTSRequest, _: None = Depends(require_session)):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is empty")
     if pipeline is None:
