@@ -34,6 +34,8 @@ if not TURNSTILE_SECRET:
 # Signs short-lived session tokens. Random per-process unless pinned via env.
 SESSION_SECRET = os.environ.get("SESSION_SECRET", secrets.token_hex(32))
 SESSION_TTL = 60 * 60  # 1 hour
+# Only accept Turnstile tokens solved on these exact hostnames.
+TURNSTILE_HOSTNAMES = {"article-bot.matildabc.com", "localhost"}
 
 
 def issue_session() -> str:
@@ -145,6 +147,8 @@ def auth_turnstile(req: TurnstileRequest):
 
     if not result.get("success"):
         raise HTTPException(status_code=403, detail="turnstile rejected")
+    if result.get("hostname") not in TURNSTILE_HOSTNAMES:
+        raise HTTPException(status_code=403, detail="hostname not allowed")
 
     return {"session": issue_session()}
 
