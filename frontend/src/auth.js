@@ -4,6 +4,8 @@
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY;
+// 로컬 개발용: Cloudflare Turnstile을 건너뛰고 백엔드의 /auth/dev로 세션을 받는다.
+const DEV_AUTH = import.meta.env.VITE_DEV_AUTH === "1";
 
 let sessionToken = null;
 let sessionExp = 0; // ms epoch; refresh a bit early
@@ -46,10 +48,11 @@ function getTurnstileToken() {
             container.remove();
             resolve(token);
           },
-          "error-callback": () => {
+          "error-callback": (code) => {
+            console.error("Turnstile error code:", code, "(site key:", SITE_KEY, ", host:", window.location.hostname, ")");
             window.turnstile.remove(id);
             container.remove();
-            reject(new Error("Turnstile error"));
+            reject(new Error(`Turnstile error${code ? ` (${code})` : ""}`));
           },
         });
       })
@@ -58,6 +61,16 @@ function getTurnstileToken() {
 }
 
 async function refreshSession() {
+  // 개발 모드: Turnstile 생략하고 dev 세션 엔드포인트 사용.
+  if (DEV_AUTH) {
+    const res = await fetch(`${API_URL}/auth/dev`, { method: "POST" });
+    if (!res.ok) throw new Error(`dev auth failed: HTTP ${res.status}`);
+    const data = await res.json();
+    sessionToken = data.session;
+    sessionExp = Date.now() + 55 * 60 * 1000;
+    return sessionToken;
+  }
+
   const token = await getTurnstileToken();
   const res = await fetch(`${API_URL}/auth/turnstile`, {
     method: "POST",
