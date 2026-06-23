@@ -4,3 +4,4 @@ kokoro
 soundfile
 numpy
 python-dotenv
+beautifulsoup4

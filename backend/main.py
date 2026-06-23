@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from io import BytesIO
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen, Request
 import hashlib
 import hmac
@@ -19,9 +19,14 @@ from pydantic import BaseModel
 import numpy as np
 import soundfile as sf
 
+from bs4 import BeautifulSoup
+
 from kokoro import KPipeline
 
 SAMPLE_RATE = 24000
+
+# 기사를 추출할 수 있는 허용 도메인 (서버측 SSRF 방지 — 임의 URL fetch 차단).
+ALLOWED_ARTICLE_HOSTS = ("bbc.com", "bbc.co.uk")
 
 # --- Turnstile / session auth ---
 # Load secrets from backend/.env (gitignored — never committed).
@@ -36,6 +41,9 @@ SESSION_SECRET = os.environ.get("SESSION_SECRET", secrets.token_hex(32))
 SESSION_TTL = 60 * 60  # 1 hour
 # Only accept Turnstile tokens solved on these exact hostnames.
 TURNSTILE_HOSTNAMES = {"article-bot.matildabc.com", "localhost"}
+# Local-dev only: when set, exposes /auth/dev to mint a session WITHOUT Turnstile.
+# Never enable on the public/production deployment.
+ALLOW_DEV_SESSION = os.environ.get("ALLOW_DEV_SESSION") == "1"
 
 
 def issue_session() -> str:
@@ -132,6 +140,61 @@ class TurnstileRequest(BaseModel):
     token: str
 
 
+class ExtractRequest(BaseModel):
+    url: str
+
+
+def _host_allowed(netloc: str) -> bool:
+    host = netloc.split(":")[0].lower()
+    return any(host == d or host.endswith("." + d) for d in ALLOWED_ARTICLE_HOSTS)
+
+
+def extract_article(url: str) -> dict:
+    """BBC 기사 URL에서 제목과 문단을 추출한다."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not _host_allowed(parsed.netloc):
+        raise HTTPException(status_code=400, detail="BBC 기사 URL만 지원합니다.")
+
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0 (NewsStudyBot)"})
+    try:
+        with urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        raise HTTPException(status_code=502, detail="기사를 가져오지 못했습니다.")
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    title_el = soup.find("h1")
+    title = title_el.get_text(strip=True) if title_el else ""
+
+    # BBC 본문은 data-component="text-block" 블록 안의 <p> 로 구성됨.
+    blocks = soup.find_all(attrs={"data-component": "text-block"})
+    paragraphs: list[str] = []
+    if blocks:
+        for block in blocks:
+            for p in block.find_all("p"):
+                text = p.get_text(" ", strip=True)
+                if text:
+                    paragraphs.append(text)
+    else:
+        # 폴백: <article> 안의 모든 <p>
+        article = soup.find("article") or soup
+        for p in article.find_all("p"):
+            text = p.get_text(" ", strip=True)
+            if text:
+                paragraphs.append(text)
+
+    if not paragraphs:
+        raise HTTPException(status_code=422, detail="본문을 찾지 못했습니다.")
+
+    return {"title": title, "paragraphs": paragraphs}
+
+
+@app.post("/extract")
+def extract(req: ExtractRequest, _: None = Depends(require_session)):
+    return extract_article(req.url.strip())
+
+
 @app.post("/auth/turnstile")
 def auth_turnstile(req: TurnstileRequest):
     """Verify a Turnstile token with Cloudflare, then issue a session token."""
@@ -150,6 +213,14 @@ def auth_turnstile(req: TurnstileRequest):
     if result.get("hostname") not in TURNSTILE_HOSTNAMES:
         raise HTTPException(status_code=403, detail="hostname not allowed")
 
+    return {"session": issue_session()}
+
+
+@app.post("/auth/dev")
+def auth_dev():
+    """로컬 개발용: Turnstile 없이 세션을 발급한다 (ALLOW_DEV_SESSION=1 일 때만)."""
+    if not ALLOW_DEV_SESSION:
+        raise HTTPException(status_code=404, detail="not found")
     return {"session": issue_session()}
 
 
