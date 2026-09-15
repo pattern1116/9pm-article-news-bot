@@ -60,7 +60,7 @@ export default function App() {
 
   function handleParse(parsed) {
     stop();
-    setParagraphs(groupParagraphs(parsed));
+    setParagraphs(parsed);
     setTitle("");
     setSourceUrl(null);
   }
